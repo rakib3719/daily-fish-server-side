@@ -74,6 +74,10 @@ async function run() {
     const fishCollection = client.db('dailyFish').collection('fishInfo')
     const cartCollection = client.db('dailyFish').collection('cartInfo')
     const orderCollection = client.db('dailyFish').collection('orderInfo')
+    const reviewCollection = client.db('dailyFish').collection('review')
+    const settingCollection = client.db('dailyFish').collection('setting')
+    const blogsCollection = client.db('dailyFish').collection('blogs')
+    const contactCollection = client.db('dailyFish').collection('contactMessage')
 
     const verifyOwner= async (req, res, next) => {
 
@@ -82,7 +86,7 @@ async function run() {
 
       const result = await userCollection.findOne(query)
 
-      console.log(result);
+   
 
   
       if (!result || result?.userRole !== 'owner')
@@ -139,6 +143,18 @@ async function run() {
       const result = await userCollection.findOne(query);
     
       if (!result || !['developer', 'manager', 'owner'].includes(result?.userRole)) {
+        return res.status(403).send({ message: 'Forbidden access!!' });
+      }
+    
+      next();
+    };
+    const verifySpecial = async (req, res, next) => {
+      const user = req?.user?.userEmail;
+      const query = { userEmail: user };
+    
+      const result = await userCollection.findOne(query);
+    
+      if (!result || !['developer',  'owner'].includes(result?.userRole)) {
         return res.status(403).send({ message: 'Forbidden access!!' });
       }
     
@@ -271,6 +287,31 @@ app.get('/getFishTwo', async (req, res) => {
   }
 });
 
+app.get('/fishDetails/:id', async(req, res)=>{
+
+const id = req.params.id;
+
+const query = {_id: new ObjectId(id)};
+const result = await fishCollection.findOne(query);
+
+res.send(result)
+
+})
+
+app.get('/truck/:email', verifyToken, async(req,res)=>{
+
+const email = req.params.email;
+
+const query = {
+  email: email
+}
+
+const result = await orderCollection.find(query).toArray();
+res.send(result)
+
+
+})
+
 
 
 
@@ -305,7 +346,8 @@ const update = {
     description: updateData.description,
     type: updateData.type,
     updatedBy: updateData.email,
-    updatedAt: new Date()
+    updatedAt: new Date(),
+    stockStatus: updateData.stockStatus
   }
 };
 const result = await fishCollection.updateOne(query, update);
@@ -315,7 +357,11 @@ res.send(result)
 app.post('/addCart', async (req, res) => {
   const cartInfo = req.body;
   const id = cartInfo.id;
-  const query = {id: id}
+ 
+  const userEmail = cartInfo?.email
+  const query = {id: id,
+    email: userEmail
+  }
   try {
 
     const isExist = await cartCollection.findOne(query);
@@ -422,7 +468,7 @@ app.get('/courier', verifyToken, verifyAll, async(req, res)=>{
   res.send({count: result})
   
   })
-app.get('/confirmed"', verifyToken, verifyAll, async(req, res)=>{
+app.get('/confirmed', verifyToken, verifyAll, async(req, res)=>{
 
   const query = {
     status: "confirmed"
@@ -455,12 +501,42 @@ app.post('/saveOrder', async (req, res) => {
     await cartCollection.deleteMany(query);
   }
 });
-app.get('/allusers', async(req, res)=> {
+app.get('/allUsers', async (req, res) => {
+  const search = req.query.search || ''; // search value from query
+  const skip = parseInt(req.query.skip) || 0; // skip value for pagination
+  const limit = parseInt(req.query.limit) || 15; // limit value for pagination
 
-  const result = await userCollection.find().toArray();
-  res.send(result)
+  const query = {
+    $or: [
+      { userEmail: { $regex: search, $options: 'i' } },
+      { userName: { $regex: search, $options: 'i' } },
+    ],
+  };
+
+  const users = await userCollection.find(query).skip(skip).limit(limit).toArray();
+  const total = await userCollection.countDocuments(query);
+
+  res.send({ users, total });
+});
+
+app.get('/countUsers', async (req, res) => {
+  const total = await userCollection.countDocuments();
+  res.send({ count: total });
+});
+app.put('/updateUserRole/:id', async (req, res) => {
+  const userId = req.params.id;
+  const { role, mobileNumber } = req.body; // role sent from frontend
   
-  })
+  const result = await userCollection.updateOne(
+    { _id: new ObjectId(userId) }, // Find user by ID
+    { $set: { userRole: role,
+      mobileNumber: mobileNumber
+     } } // Update the role
+  );
+  
+  res.send(result);
+});
+
 app.get('/orderInfo',verifyToken, verifyAll, async (req,res)=>{
   const query = {
     status: "pending"}
@@ -470,15 +546,52 @@ app.get('/orderInfo',verifyToken, verifyAll, async (req,res)=>{
 
 
 
-app.get('/pendeingDelevery',verifyToken,verifyOwner,  async (req,res)=>{
+app.get('/pendeingDelevery', verifyToken, verifyAll, async (req, res) => {
+  const filterStatus = req.query.filter;
+  const page = parseInt(req.query.page) || 1; // Get the current page, default to 1
+  const limit = parseInt(req.query.limit) || 10; // Set a default limit of 10 items per page
+  const skip = (page - 1) * limit; // Calculate how many items to skip
+  
+  let query;
+  if (filterStatus === "all") {
+    query = {};
+  } else {
+    query = { status: filterStatus };
+  }
+
+  // Get total count of documents for pagination
+  const totalCount = await orderCollection.countDocuments(query);
+  
+  // Fetch only the required page of results
+  const result = await orderCollection
+    .find(query)
+    .skip(skip)
+    .limit(limit)
+    .toArray();
+  
+  res.send({
+    data: result,
+    totalCount, // Send the total count of items to the frontend for pagination
+  });
+});
 
 
+
+app.get('/totalPendingDelevery', async(req, res)=>{
 
   const query = {
-    status: { $in: ["confirmed", "courier", "done"] }}
-  const result = await orderCollection.find(query).toArray()
-  res.send(result)
+    status: { $in: ["confirmed", "done", "courier"] }
+  }
+  const result = await orderCollection.countDocuments(query);
+  res.send({count: result})
 })
+
+
+
+
+
+
+
 
 app.put('/updateStatus/:id', async (req, res) => {
   const status = req.query.status;
@@ -495,7 +608,211 @@ app.put('/updateStatus/:id', async (req, res) => {
   }
 });
 
+// user setting
 
+app.get('/employeerSetting',verifyToken,verifySpecial, async (req, res) => {
+  try {
+    const query = {
+      userRole: { $in: ["developer", "owner", "manager", "employee"] }
+    };
+
+    // Assuming userCollection is a properly initialized MongoDB collection
+    const result = await userCollection.find(query).toArray();
+    
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+
+app.put('/updateRole', verifySpecial, async(req, res)=>{
+
+  const userRole = req.params.userRole;
+  const email = req.query.email;
+
+  const query = {
+    userEmail: email
+  }
+  const updatedDoc = {
+
+    $set:{
+      userRole: userRole
+    }
+  }
+
+const result = await userCollection.updateOne(query, updatedDoc)
+
+})
+
+app.post('/review', verifyToken, async(req, res)=>{
+
+const reviewDetails = req.body;
+const result = await reviewCollection.insertOne(reviewDetails);
+res.send(result)
+
+})
+
+app.get('/review', async (req, res) => {
+  const { page = 1, limit = 5 } = req.query; // Default to page 1 and limit 5
+  const skip = (page - 1) * limit;
+
+  try {
+    const result = await reviewCollection.find().skip(parseInt(skip)).limit(parseInt(limit)).toArray();
+    const totalCount = await reviewCollection.countDocuments(); // Total number of reviews
+    res.send({ result, totalCount });
+  } catch (error) {
+    res.status(500).send({ error: 'Failed to fetch reviews' });
+  }
+});
+
+app.delete('/review/:id', verifyToken, verifyAll, async(req, res)=>{
+const id = req.params.id;
+const query = {_id : new ObjectId(id)};
+const result = await reviewCollection.deleteOne(query);
+res.send(result)
+
+})
+
+// blogs related api
+app.get('/blogCount', async(req,res)=>{
+  const result = await blogsCollection.countDocuments()
+  res.send({count:result})
+})
+
+app.post('/blog', verifyToken, async(req, res)=>{
+
+  const blog = req.body;
+  const result = await blogsCollection.insertOne(blog);
+  res.send(result)
+
+})
+
+app.get('/blog', async(req, res)=> {
+
+  const skip = parseInt(req.query.skip);
+  const limit = parseInt(req.query.limit)
+
+  
+const result =await blogsCollection.find().skip(skip).limit(limit).toArray();
+res.send(result)
+
+
+} )
+app.delete('/blog/:id', verifyToken, async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const query = { _id: new ObjectId(id) };  // Use _id instead of id
+    const result = await blogsCollection.deleteOne(query);
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ error: error.message });
+  }
+});
+
+
+
+
+app.get('/blogDetails/:id', async(req, res)=>{
+  try {
+    const id = req.params.id;
+    const query = {_id: new ObjectId(id)}
+    const result = await blogsCollection.findOne(query);
+    res.send(result)
+  } catch (error) {
+    res.status(500).send({error:error.message})
+  }
+})
+
+app.post('/blogComment/:id', async(req, res)=>{
+ try {
+  const id = req.params.id;
+  const query = {_id: new ObjectId(id)};
+  const { userEmail, userName, userPhoto, commentText, commentDate } = req.body;
+  const newComment = {
+    _id : new ObjectId(),
+    userEmail,
+    userName,
+    userPhoto,
+    commentText,
+    commentDate
+  }
+  const option = {$push:{comment: newComment}}
+  const result = await blogsCollection.updateOne(query, option);
+  res.send(result)
+ } catch (error) {
+  res.status(500).send({error:error.message})
+ }
+})
+
+app.delete('/blogComment/:blogId/:commentId', verifyToken, async (req, res) => {
+  const { blogId, commentId } = req.params;
+  console.log(blogId, commentId, "hit");
+
+  try {
+    const filter = { _id: new ObjectId(blogId) };
+    const update = { $pull: { comment: { _id: new ObjectId(commentId) } } }; // Remove comment by _id
+
+    const result = await blogsCollection.updateOne(filter, update);
+
+   res.send(result)
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to delete the comment', error });
+  }
+});
+
+
+// contact option
+
+app.post('/contact', async(req,res)=>{
+try {
+  const contacntInfo = req.body;
+  const result = await  contactCollection.insertOne(contacntInfo);
+  res.send(result)
+} catch (error) {
+  return res.status(500).send({error: error.message})
+}
+})
+
+// app.put('/setting', async (req, res) => {
+//   const { bannerImg, font } = req.body;  // Using req.body to capture data
+//   const settingId = "66f2ec3704bb22c39dbd3e0d";  // Your specific document _id
+
+//   try {
+//     const filter = { _id: new ObjectId(settingId) };
+//     const updateFields = {};
+
+//     if (font) {
+//       updateFields.font = font; // Update the font field if it's provided
+//     }
+
+//     if (bannerImg) {
+//       updateFields.bannerImg = bannerImg; // Update the bannerImg field if it's provided
+//     }
+
+//     // Check if there's anything to update
+//     if (Object.keys(updateFields).length > 0) {
+//       const updateDoc = {
+//         $set: updateFields,
+//       };
+
+//       const result = await settingCollection.updateOne(filter, updateDoc);
+
+//       if (result.matchedCount === 1) {
+//         res.status(200).json({ message: 'Settings updated successfully', result });
+//       } else {
+//         res.status(404).json({ message: 'Settings not found' });
+//       }
+//     } else {
+//       res.status(400).json({ message: 'No fields provided for update' });
+//     }
+//   } catch (error) {
+//     console.error("Error updating settings:", error);
+//     res.status(500).json({ message: 'Internal server error', error });
+//   }
+// })
 
 
 // cumpany dashboard related api end
